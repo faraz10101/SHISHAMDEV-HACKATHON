@@ -1,61 +1,84 @@
-import React, { useState, useEffect } from 'react';
-import LoginForm from './components/LoginForm';
-import RegisterForm from './components/RegisterForm';
-import { Button } from './components/ui/button';
+import React, { useState, useEffect, useCallback } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import LoginForm from './components/auth/LoginForm';
+import RegisterForm from './components/auth/RegisterForm';
+import VerifyForm from './components/auth/VerifyForm';
+import Navbar from './components/layout/Navbar';
+import { GuestRoute, ProtectedRoute, AdminRoute } from './components/common/RouteGuards';
+import HomePage from './pages/HomePage';
+import CheckPage from './pages/CheckPage';
+import ReportPage from './pages/ReportPage';
+import LookupPage from './pages/LookupPage';
+import AdminDashboardPage from './admin/pages/AdminDashboardPage';
+import { getCurrentUser, logoutUser } from './api/auth';
+import { AuthContext } from './context/AuthContext';
+
+const PENDING_KEY = 'pendingEmail';
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState('login'); // login | register | dashboard
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  // Email waiting for its verification code (kept in sessionStorage so a refresh does not lose it)
+  const [pendingEmail, setPendingEmailState] = useState(() => sessionStorage.getItem(PENDING_KEY) || '');
 
-  useEffect(() => {
-    // Check if token exists on mount
-    const token = localStorage.getItem('token');
-    if (token) {
-      // Ideal situation: verify token from backend, yahan hum dashboard state par move ho sakte hain
-      setCurrentScreen('dashboard');
-    }
+  const setPendingEmail = useCallback((email) => {
+    setPendingEmailState(email || '');
+    if (email) sessionStorage.setItem(PENDING_KEY, email);
+    else sessionStorage.removeItem(PENDING_KEY);
   }, []);
 
-  const handleLoginSuccess = (userData) => {
-    setUser(userData);
-    setCurrentScreen('dashboard');
-  };
+  // Restore the session from the backend (cookie or Bearer token) via GET /api/auth/me
+  useEffect(() => {
+    getCurrentUser().then((u) => { setUser(u); setLoading(false); });
+  }, []);
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
+  const handleLogout = async () => {
+    await logoutUser();
     setUser(null);
-    setCurrentScreen('login');
   };
 
-  if (currentScreen === 'login') {
-    return (
-      <LoginForm
-        onLoginSuccess={handleLoginSuccess}
-        onSwitchToRegister={() => setCurrentScreen('register')}
-      />
-    );
-  }
+  const handleAuthenticated = (u) => { setUser(u); setPendingEmail(''); };
 
-  if (currentScreen === 'register') {
+  if (loading) {
     return (
-      <RegisterForm
-        onSwitchToLogin={() => setCurrentScreen('login')}
-      />
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <p className="animate-pulse font-semibold text-slate-600">Loading ScamShield...</p>
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col justify-center items-center min-h-screen bg-slate-50 gap-4 p-4">
-      <div className="bg-white p-8 rounded-lg shadow-md border border-slate-200 text-center space-y-4 w-full max-w-md">
-        <h1 className="text-3xl font-extrabold text-slate-800">Welcome Back! 🎉</h1>
-        <p className="text-slate-500">You have successfully authenticated with your Express Backend.</p>
-        <div className="bg-slate-100 p-3 rounded-md text-left text-xs font-mono break-all text-slate-600">
-          Token: {localStorage.getItem('token') || 'No Token'}
-        </div>
-        <Button variant="destructive" className="w-full" onClick={handleLogout}>
-          Sign Out & Clear Token
-        </Button>
-      </div>
-    </div>
+    <AuthContext.Provider value={{ user, setUser, logout: handleLogout, pendingEmail, setPendingEmail }}>
+      <BrowserRouter>
+        <Navbar user={user} onLogout={handleLogout} />
+
+        <Routes>
+          {/* Public */}
+          <Route path="/" element={<HomePage />} />
+          <Route path="/check" element={<CheckPage />} />
+          <Route path="/lookup" element={<LookupPage />} />
+
+          {/* Needs login + verified email */}
+          <Route path="/report" element={<ProtectedRoute user={user}><ReportPage /></ProtectedRoute>} />
+
+          {/* Auth */}
+          <Route path="/login" element={<GuestRoute user={user}><LoginForm onLoginSuccess={handleAuthenticated} onNeedVerify={setPendingEmail} /></GuestRoute>} />
+          <Route path="/register" element={<GuestRoute user={user}><RegisterForm onRegisterSuccess={setPendingEmail} /></GuestRoute>} />
+          <Route
+            path="/verify"
+            element={
+              user ? <Navigate to="/" replace />
+                : pendingEmail ? <VerifyForm email={pendingEmail} onVerificationSuccess={handleAuthenticated} />
+                : <Navigate to="/register" replace />
+            }
+          />
+
+          {/* AI provider management (also needs the ADMIN_KEY) */}
+          <Route path="/admin" element={<AdminRoute user={user}><AdminDashboardPage /></AdminRoute>} />
+
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthContext.Provider>
   );
 }
